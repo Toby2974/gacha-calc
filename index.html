@@ -1,0 +1,1686 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<!-- スマホなど画面幅が違う端末でも見やすくするための設定 -->
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ガチャ確率計算機</title>
+
+<script>
+  // ===================================================
+  // 設定（あとから変更したくなる値をここにまとめている）
+  //
+  // const は「あとから変更しない値」を入れるときに使う書き方で、
+  // Javaの final のようなもの。
+  // このブロックは <head> の中にあり、ページの一番先に読み込まれるので、
+  // ページ下部にある本体のJavaScriptからそのまま使える。
+  // ===================================================
+
+  // 履歴に残しておける「固定されていない項目」の最大件数。
+  // 固定した項目はこの数に含めず、何件でも残る。
+  // 数を変えたいときはこの値だけ書き換えればよい。
+  const MAX_UNPINNED_HISTORY = 20;
+
+  // 自動削除のお知らせを画面に出しておく時間（ミリ秒）。
+  // 6000 = 6秒
+  const NOTICE_DURATION_MS = 6000;
+
+  // ブラウザに履歴を保存するときの名前（キー）。
+  // 他のサイトと混ざらないよう、少し長めの名前にしてある。
+  const STORAGE_KEY = "gachaCalc.history.v1";
+
+  // --- スワイプ操作の設定 ---
+
+  // 「画面の左端」とみなす幅（ピクセル）。
+  // 履歴が閉じているときは、この範囲から始めたスワイプだけを開く操作として扱う。
+  // 画面のどこからでも開くようにすると、誤操作が増えるため範囲を限っている。
+  const SWIPE_EDGE_PX = 30;
+
+  // スワイプと認めるのに必要な、横に動いた距離（ピクセル）。
+  // これより小さい動きは、タップの手ぶれとみなして無視する。
+  const SWIPE_MIN_DISTANCE_PX = 60;
+</script>
+
+<style>
+  /* ===================================================
+     ここから CSS（見た目のデザイン）
+     HTMLタグに対してどんな見た目にするかをまとめて指定している
+  =================================================== */
+
+  /* ページ全体の基本設定 */
+  body {
+    font-family: "Meiryo", "Hiragino Kaku Gothic ProN", sans-serif; /* OSに標準で入っているフォントだけを使う（外部フォントは使わない） */
+    background-color: #f2f4f7;
+    margin: 0;
+    padding: 20px;
+    display: flex;
+    justify-content: center; /* 横方向の中央寄せ */
+  }
+
+  /* 履歴欄とカードを横に並べるための外枠 */
+  .layout {
+    display: flex;
+    gap: 16px;
+    align-items: flex-start; /* 高さが違っても上端を揃える */
+    justify-content: center;
+
+    /*
+      幅の指定。ここが抜けていると、中身の都合で横に広がりすぎて
+      画面からはみ出してしまう。
+
+      width: 100% で親（body）の幅までは広がるようにし、
+      max-width で「履歴欄240px + すきま16px + カード480px」の
+      合計736pxより広くならないよう上限を付けている。
+
+      なお flex-wrap（折り返し）はあえて指定していない。
+      折り返しを許すと、カードが行に収まらないときに
+      履歴欄が上の行へ押し出されてしまうため。
+      画面が狭いときは、折り返しではなく下のメディアクエリで
+      履歴欄を引き出しに変えて対応する。
+    */
+    width: 100%;
+    max-width: 736px;
+  }
+
+  /* 左側の履歴欄 */
+  .history-panel {
+    background-color: #ffffff;
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    padding: 20px 18px;
+    /* flex: 0 0 240px = 伸び縮みせず240px幅で固定する
+       （ラベルの右にピンとゴミ箱を置くため、少し広めにしてある） */
+    flex: 0 0 240px;
+    box-sizing: border-box;
+  }
+
+  .history-title {
+    font-size: 14px;
+    font-weight: bold;
+    color: #444;
+    margin-bottom: 12px;
+  }
+
+  /* 履歴が1件もないときに出すメッセージ */
+  .history-empty {
+    font-size: 12px;
+    color: #aaa;
+    line-height: 1.6;
+  }
+
+  /*
+    履歴の1件分は「ラベル・ピン・ゴミ箱」の3つのボタンを横に並べた行にする。
+    ボタンの中にボタンは入れられないので、行を div で作り、その中に
+    3つのボタンを並べている。
+  */
+  .history-row {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 6px;
+  }
+
+  /*
+    ラベル部分。クリックできるようにボタンで作っているが、
+    上の button の指定（青背景・白文字）のままだと見た目が合わないので、
+    ここで上書きしている。クラス指定のほうが優先されるルールを利用している。
+  */
+  .history-item {
+    flex: 1 1 auto; /* 残りの幅をすべて使う */
+    min-width: 0;   /* 文字が長いときに横へはみ出さないようにする */
+    text-align: left;
+    background-color: #f7f9fc;
+    border: 1px solid #e2e6ee;
+    color: #3a5bbf;
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 13px;
+    font-family: inherit; /* ボタンは既定でフォントが変わるので本文と揃える */
+  }
+
+  /* ピン・ゴミ箱の小さなアイコンボタン（共通の見た目） */
+  .icon-btn {
+    flex: 0 0 30px; /* 伸び縮みせず30px幅で固定する */
+    padding: 0;
+    font-size: 13px;
+    line-height: 1;
+    background-color: #f7f9fc;
+    border: 1px solid #e2e6ee;
+    border-radius: 6px;
+    color: #999;
+  }
+
+  .history-item:hover,
+  .icon-btn:hover {
+    background-color: #eaf0ff;
+  }
+
+  .del-btn:hover {
+    background-color: #ffecea; /* 削除だけ赤系にして誤操作に気づきやすくする */
+    color: #c0554a;
+  }
+
+  /*
+    ここから「固定されている項目」の見た目。
+    上の :hover の指定と強さが同じなので、あとに書くことで
+    こちらが優先されるようにしている（同じ強さなら後勝ち、というCSSのルール）。
+  */
+  .history-item.pinned {
+    background-color: #fff8e8;
+    border-color: #f0d9a8;
+    color: #a5701a;
+  }
+
+  .pin-btn.pinned {
+    background-color: #ffeec9;
+    border-color: #f0c987;
+    color: #c98b12;
+  }
+
+  /* 固定グループと未固定グループの間に入れる区切り線 */
+  .history-divider {
+    border-top: 1px dashed #e0e0e0;
+    margin: 10px 0;
+  }
+
+  /* 履歴欄の下部（件数と注記）をまとめる部分 */
+  .history-footer {
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px solid #eceef2;
+  }
+
+  /* 「未固定: 18 / 20 件」の表示 */
+  .history-count {
+    font-size: 12px;
+    font-weight: bold;
+    color: #666;
+  }
+
+  /* 上限が近いとき（残り3件以下）に色を変えて注意を促す */
+  .history-count.warning {
+    color: #c07a26;
+  }
+
+  /* 「上限を超えると古い順に削除されます」の注記 */
+  .history-note {
+    font-size: 11px;
+    color: #aaa;
+    line-height: 1.5;
+    margin-top: 4px;
+  }
+
+  /*
+    自動削除が起きたときのお知らせ。
+    普段は display:none で隠しておき、削除が起きたときだけ
+    JavaScript から表示する（一定時間たつとまた隠す）。
+  */
+  .history-notice {
+    display: none;
+    margin-top: 10px;
+    padding: 8px 10px;
+    background-color: #fff4e0;
+    border: 1px solid #f0c987;
+    border-radius: 6px;
+    font-size: 11px;
+    color: #a5701a;
+    line-height: 1.5;
+    word-break: break-all; /* 長くなっても枠からはみ出さないようにする */
+  }
+
+  /* 全体を囲むカード（白い箱） */
+  .card {
+    background-color: #ffffff;
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    padding: 24px 28px;
+
+    /*
+      カードの幅の指定。
+
+      以前はここが width: 100% だった。これだと横並びのとき
+      「行の幅いっぱい」を要求してしまい、履歴欄と同じ行に収まらず
+      履歴欄が上へ押し出される原因になっていた。
+
+      flex: 1 1 auto = 残った幅を使って伸び縮みする、という指定。
+      さらに min-width: 0 が重要で、これが無いと
+      「中身より狭くはならない」という既定の動きのせいで
+      画面が狭いときにカードが縮まず、右側が画面外へはみ出す。
+    */
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: 480px;
+  }
+
+  /* 見出しと「履歴」ボタンを横に並べる行 */
+  .card-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 20px;
+  }
+
+  h1 {
+    font-size: 20px;
+    margin: 0; /* 余白は .card-header 側でまとめて付けている */
+    color: #333;
+  }
+
+  /*
+    履歴を開閉する「☰ 履歴」ボタン。
+    PC（画面が広いとき）は履歴が常に左に出ているので不要。
+    display: none で隠しておき、下のメディアクエリで
+    画面が狭いときだけ表示する。
+  */
+  .history-toggle {
+    display: none;
+    flex: 0 0 auto; /* 文字の幅ぶんだけの大きさにする */
+    padding: 8px 12px;
+    font-size: 13px;
+  }
+
+  /*
+    履歴欄の背後に敷く暗い幕。
+    こちらもPCでは不要なので隠しておく。
+  */
+  .overlay {
+    display: none;
+  }
+
+  /* 入力欄をまとめるブロックの共通スタイル */
+  .field {
+    margin-bottom: 18px;
+  }
+
+  label {
+    display: block;
+    font-size: 14px;
+    font-weight: bold;
+    color: #444;
+    margin-bottom: 6px;
+  }
+
+  /* 数値入力欄のデザイン */
+  input[type="number"] {
+    width: 100%;
+    box-sizing: border-box; /* paddingを含めてwidth100%になるようにする */
+    padding: 10px;
+    font-size: 16px;
+    border: 1px solid #ccc;
+    border-radius: 8px;
+  }
+
+  /* カウンターボタンを横並びにする */
+  .counter-buttons {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+    flex-wrap: wrap; /* 幅が足りないときは自動で折り返す（倍率が大きいとラベルが長くなるため） */
+  }
+
+  button {
+    /* flex: 1 1 90px = 幅を均等に分けつつ、90pxを下回りそうなら折り返す */
+    flex: 1 1 90px;
+    padding: 10px;
+    font-size: 14px;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    color: #fff;
+    background-color: #4a7bfc;
+  }
+
+  button:hover {
+    background-color: #3a63d4;
+  }
+
+  /* 単位変更ボタンだけ色を変えて区別する */
+  .unit-btn {
+    background-color: #f0a03c;
+  }
+  .unit-btn:hover {
+    background-color: #d8892a;
+  }
+
+  /* リセットボタンだけ色を変えて区別する */
+  .reset-btn {
+    background-color: #999;
+  }
+  .reset-btn:hover {
+    background-color: #777;
+  }
+
+  hr {
+    border: none;
+    border-top: 1px solid #e0e0e0;
+    margin: 22px 0;
+  }
+
+  /* 結果を横に並べて表示するエリア */
+  .results {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap; /* 画面が狭いときは2つを縦に積む */
+  }
+
+  .result-box {
+    /* flex: 1 1 140px = 均等に分けつつ、140pxを下回るなら折り返す */
+    flex: 1 1 140px;
+    background-color: #f7f9fc;
+    border: 1px solid #e2e6ee;
+    border-radius: 8px;
+    padding: 14px;
+    text-align: center;
+  }
+
+  .result-label {
+    font-size: 12px;
+    color: #666;
+    margin-bottom: 6px;
+  }
+
+  .result-value {
+    font-size: 22px;
+    font-weight: bold;
+    color: #2a4bd7;
+  }
+
+  .result-unit {
+    font-size: 12px;
+    color: #888;
+    margin-top: 4px;
+  }
+
+  /* 「保存」ボタンを置く行 */
+  .save-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 14px;
+  }
+
+  .save-btn {
+    background-color: #2fa36b;
+    flex: 0 0 120px; /* 伸び縮みせず120px幅で固定する */
+  }
+  .save-btn:hover {
+    background-color: #26855a;
+  }
+
+  /* 保存できなかったときの一言メッセージ */
+  .save-message {
+    font-size: 12px;
+    color: #c0554a;
+  }
+
+  /* ---- 参考情報エリア（目安の表示） ---- */
+  /* メインの結果より控えめに見せたいので、文字を小さく・色を薄くしている */
+
+  /* 2つの目安エリアを横並びにする。画面が狭いときは自動で縦積みになる */
+  .reference {
+    display: flex;
+    gap: 12px;
+    margin-top: 20px;
+    flex-wrap: wrap; /* 幅が足りなければ折り返して縦並びになる */
+  }
+
+  .ref-box {
+    /* flex: 1 1 200px = 均等に分けつつ、200pxを下回るなら折り返す */
+    flex: 1 1 200px;
+    border: 1px solid #eceef2;
+    border-radius: 8px;
+    padding: 12px 14px;
+  }
+
+  .ref-title {
+    font-size: 12px;
+    font-weight: bold;
+    color: #777;
+    margin-bottom: 8px;
+  }
+
+  /* 「10回 → 4.89%」のような1行分 */
+  .ref-row {
+    display: flex;
+    justify-content: space-between; /* 左端と右端に振り分ける */
+    font-size: 13px;
+    color: #666;
+    padding: 3px 0;
+    border-bottom: 1px dotted #eee;
+  }
+
+  /* 最後の行だけ下線を消す */
+  .ref-row:last-child {
+    border-bottom: none;
+  }
+
+  .ref-value {
+    font-weight: bold;
+    color: #555;
+  }
+
+  /* 注記（前提条件）を表示する部分 */
+  .note {
+    margin-top: 20px;
+    font-size: 12px;
+    color: #888;
+    line-height: 1.6;
+    border-top: 1px dashed #ddd;
+    padding-top: 12px;
+  }
+
+  /* ===================================================
+     ここから「画面が狭いとき」だけ適用される指定。
+
+     @media (max-width: 800px) { ... } は
+     「画面の横幅が800px以下のときだけ、中の指定を使う」という意味。
+     PC（800pxより広い）ではこのブロックは無視されるので、
+     これまでどおり履歴欄が左に出たままになる。
+
+     800px という区切りは、履歴欄(240px)と計算カード(480px)を
+     横に並べるのに必要な幅から決めている。
+  =================================================== */
+  @media (max-width: 800px) {
+
+    /* 画面が狭いので、外側の余白を減らして本文の幅をかせぐ */
+    body {
+      padding: 12px;
+    }
+
+    /*
+      履歴欄は下で引き出しに変わり、横並びの相手がいなくなる。
+      そのため上限736pxを外し、カードが画面幅いっぱいに
+      広がれるようにする。
+    */
+    .layout {
+      max-width: none;
+    }
+
+    /*
+      カードも480pxの上限を外して画面幅いっぱいに使う。
+      左右のpaddingも詰めて、内容が入る幅を確保する。
+    */
+    .card {
+      max-width: none;
+      padding: 20px 16px;
+    }
+
+    /* 「☰ 履歴」ボタンを表示する（PCでは隠していたもの） */
+    .history-toggle {
+      display: block;
+    }
+
+    /*
+      履歴欄を「引き出し」に変える。
+
+      position: fixed は、画面の決まった位置に貼り付ける指定で、
+      ページをスクロールしても一緒には動かない。
+      これで画面の左端いっぱいの縦長パネルになる。
+    */
+    .history-panel {
+      position: fixed;
+      top: 0;
+      left: 0;
+      height: 100%;
+      width: 260px;
+      max-width: 80%;    /* 画面が非常に狭い端末でも右側に余白を残す */
+      border-radius: 0;
+      overflow-y: auto;  /* 履歴が増えてはみ出すときは縦にスクロールできる */
+      z-index: 20;       /* 重なり順。数字が大きいほど手前に出る */
+      box-shadow: 2px 0 12px rgba(0, 0, 0, 0.2);
+
+      /*
+        transform: translateX(-100%) は「自分の幅ぶんだけ左へずらす」指定。
+        これで普段は画面の外（左側）に隠れる。
+
+        transition は「変化を一瞬でなく、時間をかけて行う」指定。
+        0.25秒かけて動くので、滑り出るように見える。
+      */
+      transform: translateX(-100%);
+      transition: transform 0.25s ease;
+    }
+
+    /*
+      JavaScript が open というクラスを付けると、この指定が効く。
+      ずらしを0に戻す＝画面内に滑り込んでくる。
+    */
+    .history-panel.open {
+      transform: translateX(0);
+    }
+
+    /*
+      背景を暗くする幕。
+      画面全体を覆うが、普段は opacity: 0（透明）かつ
+      pointer-events: none（タップがすり抜ける）にしてあるので、
+      閉じているときは操作の邪魔にならない。
+    */
+    .overlay {
+      display: block;
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: rgba(0, 0, 0, 0.45); /* 黒の45%の濃さ */
+      z-index: 10;  /* 履歴欄(20)より奥、他の内容より手前 */
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.25s ease;
+    }
+
+    /* 履歴を開いている間だけ、幕を見えるようにしてタップも受け付ける */
+    .overlay.open {
+      opacity: 1;
+      pointer-events: auto;
+    }
+  }
+</style>
+</head>
+
+<body>
+
+<!-- ===================================================
+     ここから HTML（画面に表示される内容そのもの）
+=================================================== -->
+<!--
+  画面が狭いときに履歴欄の背後へ敷く「暗い幕」。
+  PCでは常に非表示。スマホで履歴を開いたときだけ表示され、
+  ここをタップすると履歴が閉じる。
+-->
+<div class="overlay" id="overlay" onclick="closeHistoryPanel()"></div>
+
+<!-- 履歴欄（左）と計算カード（右）を横に並べるための外枠 -->
+<div class="layout">
+
+<!--
+  左側の履歴欄。
+  中の一覧は固定ではなく JavaScript が作って流し込むので、
+  ここでは空の入れ物（id="historyList"）だけ置いてある。
+-->
+<div class="history-panel" id="historyPanel">
+  <div class="history-title">履歴</div>
+  <div id="historyList"></div>
+
+  <!--
+    履歴欄の下部。件数の表示と注記を常に出しておく。
+    件数の文字は JavaScript が書き換える。
+  -->
+  <div class="history-footer">
+    <div class="history-count" id="historyCount"></div>
+    <div class="history-note">上限を超えると古い順に削除されます</div>
+  </div>
+
+  <!--
+    自動削除が起きたときのお知らせ欄。
+    普段はCSSで隠してあり、削除が起きたときだけ JavaScript が表示する。
+  -->
+  <div class="history-notice" id="historyNotice"></div>
+</div>
+
+<div class="card">
+  <!--
+    見出しの行。
+    「履歴」ボタンは画面が狭いときだけ表示される（PCでは非表示）。
+  -->
+  <div class="card-header">
+    <button class="history-toggle" onclick="toggleHistoryPanel()">☰ 履歴</button>
+    <h1>ガチャ確率計算機</h1>
+  </div>
+
+  <!-- 1回あたりの当選確率を入力する欄 -->
+  <div class="field">
+    <label for="probability">1回あたりの当選確率（%）</label>
+    <!--
+      oninput="onProbabilityChange()" は、この入力欄の値が変化するたびに
+      onProbabilityChange() という関数（下のJavaScript部分で定義）を
+      自動的に呼び出す、という意味。これで「計算ボタン」なしで
+      自動再計算を実現している。
+      確率が変わると倍率の選択肢も変わるので、再計算だけでなく
+      倍率のリセットも行う専用の関数を呼んでいる。
+    -->
+    <input type="number" id="probability" value="0.5" step="0.01" min="0" max="100" oninput="onProbabilityChange()">
+  </div>
+
+  <!-- 試行回数を入力する欄 -->
+  <div class="field">
+    <label for="trials">試行回数</label>
+    <input type="number" id="trials" value="0" step="1" min="0" oninput="calculate()">
+
+    <!-- 試行回数を増減／単位変更／リセットするためのボタン -->
+    <div class="counter-buttons">
+      <!--
+        addTrials(-1) / addTrials(1) には「向き」だけを渡している。
+        実際にいくつ増減するかは、JavaScript側が持っている「現在の倍率」で決まる。
+        ボタンに書かれる文字（例: −100 / ＋100）も JavaScript から書き換えるので、
+        ここでは仮の文字を置いてあるだけ。
+      -->
+      <button id="minusBtn" onclick="addTrials(-1)">−1</button>
+      <button id="plusBtn" onclick="addTrials(1)">＋1</button>
+      <button class="unit-btn" onclick="changeUnit()">単位変更</button>
+      <button class="reset-btn" onclick="resetTrials()">リセット</button>
+    </div>
+  </div>
+
+  <hr>
+
+  <!-- 計算結果を表示する部分。中身の数字はJavaScriptから書き換える -->
+  <div class="results">
+    <div class="result-box">
+      <div class="result-label">最低1回当たる確率</div>
+      <!-- id="atLeastOnceResult" の中身を、計算のたびにJavaScriptで書き換える -->
+      <div class="result-value" id="atLeastOnceResult">0.00%</div>
+    </div>
+    <div class="result-box">
+      <div class="result-label">当たる回数の期待値</div>
+      <div class="result-value" id="expectedResult">0.00</div>
+      <div class="result-unit">回（平均してこれくらい当たる目安の個数）</div>
+    </div>
+  </div>
+
+  <!-- 現在の確率・試行回数を履歴に残すためのボタン -->
+  <div class="save-row">
+    <button class="save-btn" onclick="saveHistory()">保存</button>
+    <!-- 保存できなかったときの理由をここに表示する -->
+    <span class="save-message" id="saveMessage"></span>
+  </div>
+
+  <!--
+    参考情報エリア。
+    中身の行（「10回 → 4.89%」など）は固定ではなく、
+    JavaScript側でまとめて作って流し込むので、ここは空の入れ物だけ用意しておく。
+  -->
+  <div class="reference" id="referenceArea">
+    <div class="ref-box">
+      <div class="ref-title">回数ごとの当たる確率（最低1回）</div>
+      <div id="trialsReference"></div>
+    </div>
+    <div class="ref-box">
+      <div class="ref-title">目標達成に必要な回数</div>
+      <div id="targetsReference"></div>
+    </div>
+  </div>
+
+  <!-- 前提条件の注記 -->
+  <p class="note">
+    ※各試行は独立している前提で計算しています（天井・ピックアップは未考慮）。
+  </p>
+</div>
+
+</div><!-- /.layout -->
+
+<script>
+  // ===================================================
+  // ここから JavaScript（計算やボタンの動きを担当する部分）
+  // ===================================================
+
+  // ---------------------------------------------------
+  // 倍率（「−」「＋」ボタンで1回に増減する量）に関する処理
+  // ---------------------------------------------------
+
+  // 現在の倍率を覚えておくための変数。
+  // Javaでいうフィールド変数のようなもので、関数の外に置くと
+  // どの関数からも読み書きできて、値も残り続ける。
+  var multiplier = 1;
+
+  // 入力された確率から、桁数 n = ceil(-log10(p/100)) を求める関数。
+  // 例: 1% → p/100 = 0.01 → -log10(0.01) = 2 → n = 2
+  // 確率が空欄・0・マイナスなど計算できない場合は null を返す。
+  function getExponentN() {
+    var probabilityPercent = parseFloat(document.getElementById("probability").value);
+
+    // 不正な値（空欄、文字、0以下）は倍率を決められないので null を返す
+    if (isNaN(probabilityPercent) || probabilityPercent <= 0) {
+      return null;
+    }
+    // 100%を超える入力は100%として扱う（計算側の扱いと合わせる）
+    if (probabilityPercent > 100) {
+      probabilityPercent = 100;
+    }
+
+    var p = probabilityPercent / 100; // %表記を0〜1の小数に変換
+
+    // -Math.log10(p) が n の元になる値。
+    // 小数の計算は誤差が出ることがあり、本来ちょうど 3 になるはずが
+    // 3.0000000000000004 になって ceil で 4 になってしまう場合がある。
+    // それを防ぐため、ごく小さい値(1e-9)を引いてから切り上げている。
+    return Math.ceil(-Math.log10(p) - 1e-9);
+  }
+
+  // 選べる倍率の一覧（配列）を作る関数。
+  // 1, 10, 100, ... , 10^(n+1) までを順番に入れて返す。
+  function getUnitOptions() {
+    var n = getExponentN();
+
+    // 確率が不正なときは倍率1だけの一覧にする（エラーにはしない）
+    if (n === null) {
+      return [1];
+    }
+
+    var options = [];
+    for (var i = 0; i <= n + 1; i++) {
+      options.push(Math.pow(10, i)); // 10のi乗を一覧に追加
+    }
+    return options;
+  }
+
+  // 初期倍率 10^(n-1) を求める関数
+  function getInitialMultiplier() {
+    var n = getExponentN();
+    if (n === null) {
+      return 1; // 確率が不正なときは倍率1
+    }
+
+    var initial = Math.pow(10, n - 1);
+
+    //
+    // 倍率の下限は1なので、1を下回る場合は1にそろえる。
+    // 例: n が 0 のとき 10^(-1) = 0.1 になってしまうため。
+    //
+    if (initial < 1) {
+      initial = 1;
+    }
+
+    return initial;
+  }
+
+  // 「−」「＋」ボタンに表示する文字を、現在の倍率に合わせて書き換える関数。
+  // toLocaleString() は 1000000 を "1,000,000" のように読みやすく整形してくれる。
+  function updateButtonLabels() {
+    var label = multiplier.toLocaleString();
+    document.getElementById("minusBtn").textContent = "−" + label;
+    document.getElementById("plusBtn").textContent = "＋" + label;
+  }
+
+  // 「単位変更」ボタンが押されたときに呼ばれる関数。
+  // 倍率を一覧の次の段階へ進め、最後まで行ったら先頭（1）に戻る。
+  function changeUnit() {
+    var options = getUnitOptions();
+
+    // indexOf は「配列の中で今の倍率が何番目か」を返す（見つからなければ -1）
+    var index = options.indexOf(multiplier);
+
+    // % は余りを求める演算子。末尾の次に進むと 0（＝先頭）に戻る＝循環する。
+    // 見つからなかった場合(-1)も (-1 + 1) % 長さ = 0 となり、倍率1に戻る。
+    index = (index + 1) % options.length;
+
+    multiplier = options[index];
+    updateButtonLabels(); // ボタンの文字も新しい倍率に合わせて更新
+  }
+
+  // ---------------------------------------------------
+  // 試行回数を操作するボタンの処理
+  // ---------------------------------------------------
+
+  // 「−」「＋」ボタンが押されたときに呼ばれる関数。
+  // direction には -1（減らす）か 1（増やす）が渡ってくる。
+  function addTrials(direction) {
+    var trialsInput = document.getElementById("trials"); // 試行回数の入力欄を取得
+    var current = parseInt(trialsInput.value, 10); // 現在の値を整数として取得
+
+    // 入力欄が空だったり数字でなかった場合は 0 として扱う
+    if (isNaN(current)) {
+      current = 0;
+    }
+
+    // 実際の増減量 = 向き × 現在の倍率
+    var next = current + direction * multiplier;
+
+    // 試行回数はマイナスにならないよう、0未満なら0で止める
+    if (next < 0) {
+      next = 0;
+    }
+
+    trialsInput.value = next; // 計算後の値を入力欄に反映
+    calculate(); // 値が変わったので再計算する
+  }
+
+  // 「リセット」ボタンが押されたときに呼ばれる関数
+  function resetTrials() {
+    document.getElementById("trials").value = 0; // 試行回数を0に戻す
+    calculate(); // 再計算する
+  }
+
+  // 確率の入力欄が変更されたときに呼ばれる関数。
+  // 確率が変わると倍率の選択肢そのものが変わるため、
+  // 倍率を新しい初期値（10^n）に戻してから再計算する。
+  function onProbabilityChange() {
+    multiplier = getInitialMultiplier();
+    updateButtonLabels();
+    calculate();
+  }
+
+  //
+  // 「最低1回当たる確率」を表示用の文字に整える関数。
+  //
+  // 99.99%を超えたあたりから、小数点2桁だと「100.00%」と出てしまい、
+  // 実際には当たらない可能性が残っているのに確実に見えてしまう。
+  // かといって常に桁を増やすと読みにくいので、値に応じて3段階に分けている。
+  //
+  //   99.99%未満   → 小数点2桁      （例: 63.30%）
+  //   99.99%以上   → 小数点4桁      （例: 99.9957%）
+  //   99.9999%以上 → >99.9999%      （数値は出さない）
+  //
+  // isCertain は「数学的に本当に100%か」を表す true / false。
+  // 確率100%を入力した場合などがこれにあたり、そのときだけ「100%」と表示する。
+  //
+  function formatProbabilityPercent(percentValue, isCertain) {
+    // 本当に100%のときだけ、はっきり「100%」と表示する
+    if (isCertain) {
+      return "100%";
+    }
+
+    //
+    // ここから下は「100%ではないが、とても100%に近い」場合の表示。
+    //
+    // なお、確率がごく小さくても試行回数が極端に多いと、
+    // 計算の途中で値が丸められてちょうど100になることがある。
+    // その場合も本当の100%ではないので、下の «>99.9999%» に含まれる。
+    //
+    if (percentValue >= 99.9999) {
+      return ">99.9999%";
+    }
+
+    if (percentValue >= 99.99) {
+      return percentValue.toFixed(4) + "%";
+    }
+
+    return percentValue.toFixed(2) + "%";
+  }
+
+  // 入力値が変わるたびに呼ばれる、メインの計算処理
+  function calculate() {
+    // ---- 1. 入力欄から値を取得する ----
+    var probabilityPercent = parseFloat(document.getElementById("probability").value);
+    var trials = parseInt(document.getElementById("trials").value, 10);
+
+    // ---- 2. 値が不正（空欄や文字列など）な場合は 0 として扱う ----
+    if (isNaN(probabilityPercent) || probabilityPercent < 0) {
+      probabilityPercent = 0;
+    }
+    if (probabilityPercent > 100) {
+      probabilityPercent = 100; // 確率は100%を超えないようにする
+    }
+    if (isNaN(trials) || trials < 0) {
+      trials = 0;
+    }
+
+    // ---- 3. %表記を計算用の小数（0〜1の範囲）に変換する ----
+    // 例: 0.5% → 0.005
+    var p = probabilityPercent / 100;
+
+    // ---- 4. 「最低1回当たる確率」を計算する ----
+    // 数式: 1 - (1 - p)^n
+    // 「n回すべてハズレる確率」を1から引くことで「1回以上当たる確率」を求めている
+    var atLeastOnce = 1 - Math.pow(1 - p, trials);
+    var atLeastOncePercent = atLeastOnce * 100;
+
+    // ---- 5. 「当たる回数の期待値」を計算する ----
+    // 数式: n × p（試行回数 × 確率）
+    var expectedCount = trials * p;
+
+    // ---- 6. 計算結果を画面に反映する ----
+    // toFixed(2) で小数点以下2桁の文字列に整える
+    //
+    // 「数学的に本当に100%か」の判定。
+    // 確率が100%（p が 1）で、かつ1回以上引いていれば必ず当たる。
+    // 計算結果の数値ではなく入力値で判定しているのは、
+    // 計算の丸めでちょうど100になった場合と区別するため。
+    //
+    var isCertain = (p >= 1 && trials >= 1);
+
+    document.getElementById("atLeastOnceResult").textContent =
+      formatProbabilityPercent(atLeastOncePercent, isCertain);
+    document.getElementById("expectedResult").textContent = expectedCount.toFixed(2);
+
+    // ---- 7. 下の参考情報エリアも合わせて更新する ----
+    // （こちらは確率だけで決まる内容で、入力欄の試行回数は書き換えない）
+    updateReference();
+  }
+
+  // ---------------------------------------------------
+  // 参考情報エリア（目安）の処理
+  // ---------------------------------------------------
+
+  // 「何%に到達したいか」の目標一覧（%表記）
+  var REFERENCE_TARGETS = [10, 50, 90, 99];
+
+  // 「10回 → 4.89%」のような1行分のHTMLを組み立てる補助関数。
+  // 左に項目名、右に値を置いた <div> を、文字列として返す。
+  function buildReferenceRow(labelText, valueText) {
+    return '<div class="ref-row">' +
+             '<span>' + labelText + '</span>' +
+             '<span class="ref-value">' + valueText + '</span>' +
+           '</div>';
+  }
+
+  // 参考情報エリアの中身を作り直す関数。
+  // 確率が変わるたびに calculate() から呼ばれる。
+  function updateReference() {
+    var probabilityPercent = parseFloat(document.getElementById("probability").value);
+
+    var referenceArea = document.getElementById("referenceArea");
+
+    // 確率が空欄・0以下・不正なときは計算できないので、目安表そのものを隠す
+    var isValid = !isNaN(probabilityPercent) && probabilityPercent > 0;
+
+    if (!isValid) {
+      referenceArea.style.display = "none";
+      return; // ここで処理を打ち切る（中身は作らない）
+    }
+
+    //
+    // display を空文字にすると、この場での指定が取り消され、
+    // CSS側で指定した display:flex に戻る。
+    //
+    referenceArea.style.display = "";
+
+    // 100%を超える入力は100%として扱う（メインの計算と同じ扱いに揃える）
+    if (isValid && probabilityPercent > 100) {
+      probabilityPercent = 100;
+    }
+
+    var p = probabilityPercent / 100; // %表記を0〜1の小数に変換
+
+    // ---- 内容1: 回数ごとの「最低1回当たる確率」 ----
+    // 文字列を一度変数にためてから、最後にまとめて画面に流し込む。
+    // （1行ごとに画面を書き換えるより効率が良く、書き方もすっきりする）
+    //
+    // 表示する回数の一覧。
+    // 増減ボタンの倍率の選択肢（1, 10, 100, ... , 10^(n+1)）を
+    // そのまま回数として使う。同じ getUnitOptions() を呼んでいるので、
+    // ボタンの倍率と表の回数が食い違うことがない。
+    //
+    var referenceTrials = getUnitOptions();
+
+    var trialsHtml = "";
+    for (var i = 0; i < referenceTrials.length; i++) {
+      var n = referenceTrials[i];
+
+      // メインの計算と同じ式: 1 - (1-p)^n
+      var atLeastOncePercent = (1 - Math.pow(1 - p, n)) * 100;
+
+      // 表示の整え方もメインの結果と同じ関数にそろえる
+      var valueText = formatProbabilityPercent(atLeastOncePercent, p >= 1 && n >= 1);
+
+      // toLocaleString() で 5000 を "5,000" のように読みやすくする
+      trialsHtml += buildReferenceRow(n.toLocaleString() + "回", valueText);
+    }
+    document.getElementById("trialsReference").innerHTML = trialsHtml;
+
+    // ---- 内容2: 目標達成に必要な回数（逆算） ----
+    var targetsHtml = "";
+    for (var j = 0; j < REFERENCE_TARGETS.length; j++) {
+      var targetPercent = REFERENCE_TARGETS[j];
+      var neededText;
+
+      if (p >= 1) {
+        // 確率100%の場合、下の式は log(0) = -∞ となって正しく計算できない。
+        // 実際には1回引けば必ず当たるので、1回として扱う。
+        neededText = "1回";
+      } else {
+        // 数式: n = log(1 - 目標) / log(1 - p)
+        // 「n回すべてハズレる確率」が (1-目標) を下回る回数を求めている。
+        var target = targetPercent / 100;
+        var needed = Math.log(1 - target) / Math.log(1 - p);
+
+        // Math.ceil() で切り上げて整数にする
+        // （例: 138.3回 → 139回。端数を切り捨てると目標に届かないため）
+        needed = Math.ceil(needed);
+        neededText = needed.toLocaleString() + "回";
+      }
+
+      targetsHtml += buildReferenceRow(targetPercent + "%", neededText);
+    }
+    document.getElementById("targetsReference").innerHTML = targetsHtml;
+  }
+
+  // ---------------------------------------------------
+  // 履歴の処理（保存・一覧表示・参照）
+  // ---------------------------------------------------
+
+  //
+  // 履歴をためておく配列。新しいものほど前（先頭）に入れる。
+  // ※この段階ではブラウザのメモリ上に置いているだけなので、
+  //   ページを再読み込みすると中身は消える。
+  //   （保存を残す localStorage は次の段階で追加する）
+  //
+  var historyList = [];
+
+  //
+  // 1件ごとに割り振る通し番号。保存するたびに1ずつ増やす。
+  // 「何番目か」ではなく、この番号で1件を見分けるようにしている。
+  // ※固定した項目を上に並べ替えると、画面の並び順と配列の順番がずれる。
+  //   もし「何番目か」でボタンを作ると、並べ替えたときに別の項目を
+  //   消してしまうので、ずれない目印としてこの番号を使う。
+  //
+  var nextHistoryId = 1;
+
+  // 通し番号から「配列の何番目か」を探す関数。
+  // 見つからなければ -1 を返す。
+  function findHistoryIndexById(id) {
+    for (var i = 0; i < historyList.length; i++) {
+      if (historyList[i].id === id) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  // ---------------------------------------------------
+  // 履歴欄の開閉（画面が狭いときの引き出し）
+  //
+  // 開いているかどうかは、HTMLの要素に "open" というクラスを
+  // 付けるか外すかで表している。見た目の変化はCSS側が担当し、
+  // JavaScriptは「開いている印」を付け外しするだけ、という分け方。
+  //
+  // PC（画面が広いとき）はメディアクエリの指定が効かないので、
+  // このクラスが付いていても見た目は変わらない。
+  // つまり画面幅の判定をJavaScript側で書く必要がない。
+  // ---------------------------------------------------
+
+  // 今、履歴欄が開いているかどうかを調べる関数。
+  // classList.contains("open") は「そのクラスが付いているか」を true / false で返す。
+  function isHistoryPanelOpen() {
+    return document.getElementById("historyPanel").classList.contains("open");
+  }
+
+  // 履歴欄を開く関数
+  function openHistoryPanel() {
+    document.getElementById("historyPanel").classList.add("open");
+    document.getElementById("overlay").classList.add("open");
+  }
+
+  // 履歴欄を閉じる関数。
+  // 背景の暗い幕をタップしたときと、履歴のラベルを選んだときに呼ばれる。
+  function closeHistoryPanel() {
+    // classList.remove("open") は、クラスが付いていれば外す命令。
+    // 付いていない場合は何も起きないので、そのまま呼んで問題ない。
+    document.getElementById("historyPanel").classList.remove("open");
+    document.getElementById("overlay").classList.remove("open");
+  }
+
+  // 「☰ 履歴」ボタンが押されたときに呼ばれる関数。
+  // 開いていれば閉じ、閉じていれば開く。
+  function toggleHistoryPanel() {
+    if (isHistoryPanelOpen()) {
+      closeHistoryPanel();
+    } else {
+      openHistoryPanel();
+    }
+  }
+
+  // ---------------------------------------------------
+  // スワイプ操作での開閉
+  //
+  // 「指を置いた位置」と「指を離した位置」を比べて、
+  // 横に大きく動いていればスワイプとみなす、という単純な方法で判定する。
+  //
+  // 【縦スクロールを妨げないための工夫】
+  //  1. 指が動いている最中は何もせず、指を離した時点で初めて判断する
+  //  2. 縦の移動量が横以上なら、スクロール操作とみなして何もしない
+  //  3. イベントの登録時に { passive: true } を指定している。
+  //     これは「この処理はスクロールを止めません」とブラウザに約束する印で、
+  //     ブラウザは安心してスクロールを先に進められる。
+  //     （実際 preventDefault は一度も呼んでいない）
+  //
+  // スワイプは誤動作しやすいので、「☰ 履歴」ボタンでの開閉も残してある。
+  // ---------------------------------------------------
+
+  // 指を置いた位置を覚えておくための変数
+  var touchStartX = 0;
+  var touchStartY = 0;
+
+  // 今回の指の動きを、スワイプ判定の対象とするかどうか
+  var isTrackingSwipe = false;
+
+  // スワイプの監視を始める関数。ページ読み込み時に1回だけ呼ぶ。
+  function setupSwipe() {
+    //
+    // addEventListener は「この出来事が起きたら、この処理を実行して」という登録。
+    // touchstart（指が触れた） と touchend（指が離れた） を見ている。
+    //
+    document.addEventListener("touchstart", function (event) {
+      // 指が2本以上のとき（拡大縮小の操作など）は対象外にする
+      if (event.touches.length !== 1) {
+        isTrackingSwipe = false;
+        return;
+      }
+
+      touchStartX = event.touches[0].clientX; // 画面左端からの距離
+      touchStartY = event.touches[0].clientY; // 画面上端からの距離
+
+      //
+      // 開いているときは、閉じる操作を受け付けたいので画面のどこからでもよい。
+      // 閉じているときは、左端から始まったときだけ受け付ける（誤動作を減らすため）。
+      //
+      if (isHistoryPanelOpen()) {
+        isTrackingSwipe = true;
+      } else {
+        isTrackingSwipe = touchStartX <= SWIPE_EDGE_PX;
+      }
+    }, { passive: true });
+
+    document.addEventListener("touchend", function (event) {
+      // 対象外の指の動きなら何もしない
+      if (!isTrackingSwipe) {
+        return;
+      }
+      isTrackingSwipe = false; // 次の操作に備えて戻しておく
+
+      // changedTouches には「今離れた指」の情報が入っている
+      var endX = event.changedTouches[0].clientX;
+      var endY = event.changedTouches[0].clientY;
+
+      // 動いた距離。右に動くと moveX はプラス、左に動くとマイナスになる。
+      var moveX = endX - touchStartX;
+      var moveY = endY - touchStartY;
+
+      //
+      // Math.abs() は絶対値（マイナスを取り払った大きさ）。
+      // 縦の動きが横以上なら、ページをスクロールしたかったと判断して何もしない。
+      // これがないと、縦スクロールのたびに履歴が開いてしまう。
+      //
+      if (Math.abs(moveY) >= Math.abs(moveX)) {
+        return;
+      }
+
+      // 横の動きが小さすぎる場合は、タップの手ぶれとみなして何もしない
+      if (Math.abs(moveX) < SWIPE_MIN_DISTANCE_PX) {
+        return;
+      }
+
+      if (moveX > 0 && !isHistoryPanelOpen()) {
+        // 右方向へのスワイプ（左端から）→ 開く
+        openHistoryPanel();
+      } else if (moveX < 0 && isHistoryPanelOpen()) {
+        // 左方向へのスワイプ（開いている状態）→ 閉じる
+        closeHistoryPanel();
+      }
+    }, { passive: true });
+  }
+
+  // ---------------------------------------------------
+  // 履歴をブラウザに保存する処理（localStorage）
+  //
+  // localStorage は「ブラウザに文字列を保存しておく置き場」で、
+  // ページを閉じても中身が残る。ただし保存できるのは文字列だけなので、
+  // 配列やオブジェクトはそのままでは入れられない。
+  // そこで JSON という文字列の形式に変換してから保存し、
+  // 読み込むときに元の配列へ戻している。
+  //
+  // 【保存しているデータの形式】
+  // STORAGE_KEY という名前で、次のような配列を文字列にして保存している。
+  //
+  //   [
+  //     {
+  //       "probability": 0.5,                        // 確率(%)。数値
+  //       "trials": 200,                             // 試行回数。数値
+  //       "savedAt": "2026-08-02T01:23:45.678Z",     // 保存日時。文字列
+  //       "pinned": true                             // 固定状態。true か false
+  //     },
+  //     ... （新しいものが先頭。以降同じ形が並ぶ）
+  //   ]
+  //
+  // 画面に出すラベル（"0.5%：200回"）と通し番号(id)は保存していない。
+  // どちらも上の4つから作り直せるので、持たせる必要がないため。
+  // ---------------------------------------------------
+
+  //
+  // 履歴をブラウザに保存する関数。
+  //
+  // localStorage は、ブラウザの設定や容量の都合で
+  // 使えないことがあり、その場合はエラーが起きる。
+  // try { } catch { } で囲んでおくと、エラーが起きても
+  // catch の中に処理が移るだけで、アプリは止まらずに動き続ける。
+  //
+  function saveToStorage() {
+    try {
+      var dataToStore = [];
+
+      for (var i = 0; i < historyList.length; i++) {
+        var entry = historyList[i];
+
+        dataToStore.push({
+          probability: entry.probability,
+          trials: entry.trials,
+          // Dateはそのままでは保存できないので、toISOString() で文字列にする
+          savedAt: entry.savedAt.toISOString(),
+          pinned: entry.pinned
+        });
+      }
+
+      // JSON.stringify は、配列やオブジェクトを文字列に変換する命令
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(dataToStore));
+
+    } catch (error) {
+      //
+      // 保存に失敗しても、画面上の履歴はそのまま使える。
+      // 「次に開いたときに残っていない」だけなので、
+      // ここでは何もせず処理を続ける。
+      //
+    }
+  }
+
+  //
+  // ブラウザに保存しておいた履歴を読み込む関数。
+  // ページを開いたときに1回だけ呼ぶ。
+  //
+  // 保存されたデータが壊れていたり、別の形式だったりしても
+  // アプリが動かなくならないよう、1件ずつ内容を確認しながら復元する。
+  //
+  function loadFromStorage() {
+    try {
+      var text = localStorage.getItem(STORAGE_KEY);
+
+      // まだ一度も保存していなければ null が返る。その場合は何もしない。
+      if (!text) {
+        return;
+      }
+
+      // JSON.parse は、文字列を配列やオブジェクトに戻す命令。
+      // 中身が壊れているとここでエラーになるが、catch が受け止めてくれる。
+      var parsed = JSON.parse(text);
+
+      // 配列でなければ想定外の形式なので、読み込まずに終了する
+      if (!Array.isArray(parsed)) {
+        return;
+      }
+
+      var restored = [];
+
+      for (var i = 0; i < parsed.length; i++) {
+        var item = parsed[i];
+
+        // 中身がオブジェクトでなければこの1件は飛ばす（continue = 次のくり返しへ）
+        if (!item || typeof item !== "object") {
+          continue;
+        }
+
+        var probability = parseFloat(item.probability);
+        var trials = parseInt(item.trials, 10);
+
+        // 数値として読めない、または範囲がおかしい行は捨てる。
+        // 壊れた1件のせいで全部が消えないよう、1件ずつ判断している。
+        if (isNaN(probability) || probability < 0 || probability > 100) {
+          continue;
+        }
+        if (isNaN(trials) || trials <= 0) {
+          continue;
+        }
+
+        // 文字列で保存しておいた日時を Date に戻す
+        var savedAt = new Date(item.savedAt);
+
+        // 日時として読めない場合は、とりあえず現在時刻にしておく
+        if (isNaN(savedAt.getTime())) {
+          savedAt = new Date();
+        }
+
+        restored.push({
+          //
+          // 通し番号は保存していないので、読み込み時に振り直す。
+          // 番号は「今この画面で1件を見分ける」ためだけのものなので、
+          // 前回と同じ番号である必要はない。
+          //
+          id: nextHistoryId,
+          probability: probability,
+          trials: trials,
+          savedAt: savedAt,
+          // pinned が true のときだけ固定扱いにする（それ以外はすべて未固定）
+          pinned: item.pinned === true,
+          label: probability + "%：" + trials + "回"
+        });
+
+        nextHistoryId = nextHistoryId + 1;
+      }
+
+      historyList = restored;
+
+    } catch (error) {
+      //
+      // 保存データが壊れていて読み込めなかった場合はここに来る。
+      // 履歴を空にしたうえで、壊れたデータを消しておく。
+      // こうすると次回からは正常に保存・読み込みできる。
+      //
+      historyList = [];
+
+      try {
+        localStorage.removeItem(STORAGE_KEY);
+      } catch (removeError) {
+        // 消すことすらできない環境でも、そのまま動き続ける
+      }
+    }
+  }
+
+  // 固定されていない項目が今何件あるかを数える関数
+  function countUnpinned() {
+    var count = 0;
+    for (var i = 0; i < historyList.length; i++) {
+      if (!historyList[i].pinned) {
+        count = count + 1;
+      }
+    }
+    return count;
+  }
+
+  //
+  // 上限を超えていたら、古いものから自動削除する関数。
+  // 削除したもののラベルを配列にして返す（呼び出し側でお知らせに使う）。
+  //
+  // 固定された項目は数にも数えず、削除の対象にもしない。
+  //
+  function enforceHistoryLimit() {
+    var removedLabels = [];
+    var unpinnedCount = countUnpinned();
+
+    // 超えている間、1件ずつ削除を繰り返す
+    while (unpinnedCount > MAX_UNPINNED_HISTORY) {
+      //
+      // historyList は「新しいものが先頭」の順なので、
+      // 配列の後ろから探すと最初に見つかる未固定の項目が「最も古い未固定」になる。
+      //
+      for (var i = historyList.length - 1; i >= 0; i--) {
+        if (!historyList[i].pinned) {
+          removedLabels.push(historyList[i].label); // 何を消したか控えておく
+          historyList.splice(i, 1);                 // i番目から1件を取り除く
+          break;                                    // 1件消したらこのforを抜ける
+        }
+      }
+      unpinnedCount = unpinnedCount - 1;
+    }
+
+    return removedLabels;
+  }
+
+  //
+  // お知らせを消すためのタイマーを覚えておく変数。
+  // 続けて削除が起きたときに、前のタイマーを取り消して
+  // 表示時間を計り直すために使う。
+  //
+  var noticeTimerId = null;
+
+  //
+  // 自動削除が起きたことを画面で知らせる関数。
+  // 利用者が指示していないのにデータが消える操作なので、
+  // 何が消えたのかラベルをそのまま見せる。
+  //
+  function showRemovedNotice(removedLabels) {
+    // 何も削除されていなければ、お知らせは出さない
+    if (removedLabels.length === 0) {
+      return;
+    }
+
+    var noticeArea = document.getElementById("historyNotice");
+
+    // join(" / ") は配列を1つの文字列につなげる命令
+    noticeArea.textContent =
+      "上限（未固定 " + MAX_UNPINNED_HISTORY + "件）を超えたため、古い順に自動削除しました: " +
+      removedLabels.join(" / ");
+
+    noticeArea.style.display = "block"; // 隠してあった枠を表示する
+
+    // すでにタイマーが動いていれば取り消す（表示時間を計り直すため）
+    if (noticeTimerId !== null) {
+      clearTimeout(noticeTimerId);
+    }
+
+    //
+    // setTimeout は「指定した時間がたったら中の処理を実行する」命令。
+    // ここでは NOTICE_DURATION_MS（6秒）後にお知らせを隠している。
+    //
+    noticeTimerId = setTimeout(function () {
+      noticeArea.style.display = "none";
+      noticeArea.textContent = "";
+      noticeTimerId = null;
+    }, NOTICE_DURATION_MS);
+  }
+
+  // 「未固定: 18 / 20 件」の表示を更新する関数
+  function updateHistoryCount() {
+    var unpinnedCount = countUnpinned();
+    var countArea = document.getElementById("historyCount");
+
+    countArea.textContent = "未固定: " + unpinnedCount + " / " + MAX_UNPINNED_HISTORY + " 件";
+
+    //
+    // 残りが3件以下になったら色を変えて気づきやすくする。
+    // className に "warning" を足すと、CSS側の .history-count.warning が効く。
+    //
+    if (MAX_UNPINNED_HISTORY - unpinnedCount <= 3) {
+      countArea.className = "history-count warning";
+    } else {
+      countArea.className = "history-count";
+    }
+  }
+
+  // 「保存」ボタンが押されたときに呼ばれる関数
+  function saveHistory() {
+    var probabilityPercent = parseFloat(document.getElementById("probability").value);
+    var trials = parseInt(document.getElementById("trials").value, 10);
+    var messageArea = document.getElementById("saveMessage");
+
+    // 試行回数が0（や空欄）のときは保存せず、一言だけ表示して終了する。
+    // return を書くと、この関数の処理をここで打ち切れる。
+    if (isNaN(trials) || trials <= 0) {
+      messageArea.textContent = "試行回数が0のため保存しませんでした";
+      return;
+    }
+
+    // 確率が空欄などの場合は0%として扱う（メインの計算と同じ扱いに揃える）
+    if (isNaN(probabilityPercent) || probabilityPercent < 0) {
+      probabilityPercent = 0;
+    }
+    if (probabilityPercent > 100) {
+      probabilityPercent = 100;
+    }
+
+    //
+    // 1件分のデータを「オブジェクト」としてまとめる。
+    // Javaでいう小さなクラスのインスタンスのようなもので、
+    // 名前と値の組を { } の中に並べて作る。
+    // 画面にはlabelしか出さないが、あとで入力欄に戻せるよう
+    // 確率と試行回数を数値のまま持っておくのが大事なところ。
+    //
+    var entry = {
+      id: nextHistoryId,                     // この1件を見分けるための通し番号
+      probability: probabilityPercent,       // 確率(%)
+      trials: trials,                        // 試行回数
+      savedAt: new Date(),                   // 保存日時（new Date() で今の日時が入る）
+      pinned: false,                         // 固定されているかどうか（最初は未固定）
+      label: probabilityPercent + "%：" + trials + "回" // 一覧に出す文字
+    };
+
+    nextHistoryId = nextHistoryId + 1; // 次の保存に備えて番号を1つ進める
+
+    // unshift は配列の「先頭」に追加する命令。
+    // これにより、新しく保存したものが一覧の一番上に来る。
+    historyList.unshift(entry);
+
+    // 追加したことで上限を超えたら、古い未固定のものを自動削除する
+    var removedLabels = enforceHistoryLimit();
+
+    saveToStorage();                    // 履歴が変わったのでブラウザにも保存する
+    messageArea.textContent = "";       // 前回の警告が残っていれば消す
+    renderHistory();                    // 一覧の表示を作り直す
+    showRemovedNotice(removedLabels);   // 自動削除が起きていれば画面で知らせる
+  }
+
+  // 履歴の一覧表示を作り直す関数
+  function renderHistory() {
+    var container = document.getElementById("historyList");
+
+    //
+    // 件数の表示を先に更新しておく。
+    // このあとの「1件もないとき」の分岐で処理を打ち切っても、
+    // 件数だけは必ず更新されるようにするため、ここで呼んでいる。
+    //
+    updateHistoryCount();
+
+    // 1件もないときは案内文だけ出して終了
+    if (historyList.length === 0) {
+      container.innerHTML = '<div class="history-empty">まだ履歴がありません。<br>「保存」で追加できます。</div>';
+      return;
+    }
+
+    //
+    // 表示の並び順を決める。
+    // historyList は「新しいものが先頭」の順にすでに並んでいるので、
+    // 固定ぶんと未固定ぶんに振り分けるだけで
+    // 「固定が上・それぞれの中では新しい順」になる。
+    //
+    var pinnedItems = [];   // 固定されている項目
+    var normalItems = [];   // 固定されていない項目
+
+    for (var i = 0; i < historyList.length; i++) {
+      if (historyList[i].pinned) {
+        pinnedItems.push(historyList[i]);
+      } else {
+        normalItems.push(historyList[i]);
+      }
+    }
+
+    // 固定ぶん → 区切り線 → 未固定ぶん、の順にHTMLを組み立てる
+    var html = "";
+
+    for (var p = 0; p < pinnedItems.length; p++) {
+      html += buildHistoryRow(pinnedItems[p]);
+    }
+
+    // 両方に項目があるときだけ、間に区切り線を入れる
+    if (pinnedItems.length > 0 && normalItems.length > 0) {
+      html += '<div class="history-divider"></div>';
+    }
+
+    for (var q = 0; q < normalItems.length; q++) {
+      html += buildHistoryRow(normalItems[q]);
+    }
+
+    container.innerHTML = html;
+  }
+
+  // 履歴1件分（ラベル・ピン・ゴミ箱）のHTMLを組み立てる補助関数
+  function buildHistoryRow(entry) {
+    //
+    // onclick="applyHistory(3)" のように、通し番号を埋め込んでおく。
+    // クリックされたときに、その番号で元データを探し出せる。
+    // title="..." はマウスを乗せたときに出る補足表示。
+    //
+    // 固定中の項目には class に "pinned" を追加して色を変える。
+    // （下の pinnedClass が "" か " pinned" のどちらかになる）
+    //
+    var pinnedClass = entry.pinned ? " pinned" : "";
+    var pinTitle = entry.pinned ? "固定を解除する" : "上部に固定する";
+
+    return '<div class="history-row">' +
+             '<button class="history-item' + pinnedClass + '"' +
+               ' onclick="applyHistory(' + entry.id + ')"' +
+               ' title="保存日時: ' + entry.savedAt.toLocaleString() + '">' +
+               entry.label +
+             '</button>' +
+             // ピンのマーク（📌）。押すたびに固定・解除が切り替わる
+             '<button class="icon-btn pin-btn' + pinnedClass + '"' +
+               ' onclick="togglePin(' + entry.id + ')" title="' + pinTitle + '">📌</button>' +
+             // ゴミ箱のマーク（🗑）。押すとその場で削除する
+             '<button class="icon-btn del-btn"' +
+               ' onclick="deleteHistory(' + entry.id + ')" title="削除する">🗑</button>' +
+           '</div>';
+  }
+
+  // ピンのマークが押されたときに呼ばれる関数。
+  // 固定されていなければ固定に、固定されていれば解除に切り替える。
+  function togglePin(id) {
+    var index = findHistoryIndexById(id);
+    if (index === -1) {
+      return; // 見つからなければ何もしない
+    }
+
+    // ! は真偽を反転させる記号。true なら false に、false なら true になる。
+    // これだけで「押すたびに切り替わる」動きになる。
+    historyList[index].pinned = !historyList[index].pinned;
+
+    //
+    // 固定を「解除」した場合、その項目が未固定の数に加わるので、
+    // 上限を超えることがある。そのためここでも確認が必要。
+    // （固定した場合は未固定が減るだけなので、超えることはない）
+    //
+    var removedLabels = enforceHistoryLimit();
+
+    saveToStorage();                  // 固定状態が変わったのでブラウザにも保存する
+    renderHistory();                  // 並び順と色が変わるので一覧を作り直す
+    showRemovedNotice(removedLabels); // 自動削除が起きていれば画面で知らせる
+  }
+
+  // ゴミ箱のマークが押されたときに呼ばれる関数
+  function deleteHistory(id) {
+    var index = findHistoryIndexById(id);
+    if (index === -1) {
+      return; // 見つからなければ何もしない
+    }
+
+    // splice(index, 1) は「index番目から1件を取り除く」という意味
+    historyList.splice(index, 1);
+
+    saveToStorage(); // 履歴が変わったのでブラウザにも保存する
+    renderHistory(); // 一覧を作り直す
+  }
+
+  // 履歴のラベルがクリックされたときに呼ばれる関数。
+  // id には保存時に割り振った通し番号が渡ってくる。
+  function applyHistory(id) {
+    var index = findHistoryIndexById(id);
+    var entry = historyList[index];
+
+    // 万が一データが見つからなければ何もしない（安全のための確認）
+    if (!entry) {
+      return;
+    }
+
+    // 保存しておいた値を入力欄に書き戻す
+    document.getElementById("probability").value = entry.probability;
+    document.getElementById("trials").value = entry.trials;
+    document.getElementById("saveMessage").textContent = ""; // 警告が出ていれば消す
+
+    //
+    // 確率が変わった場合と同じ扱いにしたいので onProbabilityChange() を呼ぶ。
+    // この中で「倍率のリセット → ボタン文字の更新 → 再計算」がまとめて行われる。
+    //
+    onProbabilityChange();
+
+    //
+    // 画面が狭いときは、選んだ時点で引き出しを閉じる。
+    // 選んだ結果（計算結果）がすぐ見えるようにするため。
+    // PCでは "open" が付いていないので、呼んでも何も起きない。
+    //
+    closeHistoryPanel();
+  }
+
+  // ページが最初に読み込まれたときの初期化処理。
+  // 入力欄の初期値（0.5% / 0回）に合わせて、倍率・ボタンの文字・計算結果を整えておく。
+  multiplier = getInitialMultiplier();
+  updateButtonLabels();
+  calculate();
+
+  //
+  // 前回までの履歴をブラウザから読み込む。
+  // renderHistory() より先に呼ぶ必要がある（読み込んだ内容を表示するため）。
+  //
+  loadFromStorage();
+
+  //
+  // 読み込んだ内容が上限を超えている場合に備えて確認する。
+  // 例えば MAX_UNPINNED_HISTORY を20から10に減らしたあと開いた場合、
+  // ここで古いものが自動削除される。黙って消さずに知らせるため、
+  // 削除が起きていれば下でお知らせを出す。
+  //
+  var removedOnLoad = enforceHistoryLimit();
+
+  if (removedOnLoad.length > 0) {
+    saveToStorage(); // 削除後の状態を保存し直す
+  }
+
+  renderHistory();                  // 履歴欄の表示を作る
+  showRemovedNotice(removedOnLoad); // 読み込み時に削除が起きていれば知らせる
+  setupSwipe();                     // スワイプ操作の監視を始める
+</script>
+
+</body>
+</html>
